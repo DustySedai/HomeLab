@@ -1,4 +1,4 @@
-# irewall Documentation (nftables)
+# Firewall Documentation (nftables)
 
 This document details the firewall configuration for the homelab server, managed via `nftables`. The configuration is designed with a restrictive default policy but **optimized to coexist with Docker**, avoiding interference with the rules and tables dynamically created by the Docker daemon.
 
