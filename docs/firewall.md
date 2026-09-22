@@ -16,23 +16,25 @@ The `inet filter` table is configured with the following default policies:
 
 ## Known Interfaces and Subnets
 
-*   **`wlp2s0`**: Main network interface (Wi-Fi / LAN). Connected to the `192.168.100.0/24` subnet.
-*   **`br-ed510586f505`**: Docker bridge network interface. Hosts services like Uptime Kuma (`172.18.0.2`).
-*   **`lo`**: Local loopback interface (internal system traffic).
+* **`wlp2s0`**: Main network interface (Wi-Fi / LAN). Connected to the `192.168.100.0/24` subnet.
+* **`br-ed510586f505`**: Docker bridge network interface. Hosts services like Uptime Kuma (`172.18.0.2`).
+* **`br-de17c2644fb0`**: Docker bridge network interface used by Immich (`172.19.0.5`).
+* **`lo`**: Local loopback interface (internal system traffic).
 
 ---
 
 ## Inbound Rules (INPUT Chain)
 
-These rules control the traffic directed specifically to the host operating system.
+These rules control traffic directed specifically to the host operating system.
 
-| Port/Protocol | Service | Allowed Source | Justification |
-| :--- | :--- | :--- | :--- |
-| **22 (TCP)** | SSH | LAN (`192.168.100.0/24`) | Administrative access from any device on the local network. |
-| **22 (TCP)** | SSH | Uptime Kuma (`172.18.0.2`) | Allows Uptime Kuma to authenticate via SSH on the host to monitor resources or execute scripts. |
-| **8080 (TCP)** | Nginx | LAN (`192.168.100.0/24`) | Local access to the web server or reverse proxy exposed on this port. |
-| **3001 (TCP)** | Uptime Kuma | LAN (`192.168.100.0/24`) | Access to the monitoring dashboard web interface from the local network. |
-| **ICMP (Echo)** | Ping | LAN (`192.168.100.0/24`) | Network diagnostics to verify if the server is online from other local devices. |
+| Port/Protocol   | Service     | Allowed Source             | Justification                                                                                   |
+| :-------------- | :---------- | :------------------------- | :---------------------------------------------------------------------------------------------- |
+| **22 (TCP)**    | SSH         | LAN (`192.168.100.0/24`)   | Administrative access from any device on the local network.                                     |
+| **22 (TCP)**    | SSH         | Uptime Kuma (`172.18.0.2`) | Allows Uptime Kuma to authenticate via SSH on the host to monitor resources or execute scripts. |
+| **8080 (TCP)**  | Nginx       | LAN (`192.168.100.0/24`)   | Local access to the web server or reverse proxy exposed on this port.                           |
+| **3001 (TCP)**  | Uptime Kuma | LAN (`192.168.100.0/24`)   | Access to the monitoring dashboard web interface from the local network.                        |
+| **2283 (TCP)**  | Immich      | LAN (`192.168.100.0/24`)   | Access to the Immich web interface from the local network.                                      |
+| **ICMP (Echo)** | Ping        | LAN (`192.168.100.0/24`)   | Network diagnostics to verify if the server is online from other local devices.                 |
 
 *Additional protections:* Packets with an invalid state are explicitly dropped (`ct state invalid drop`), and established/related connections are permitted.
 
@@ -42,16 +44,38 @@ These rules control the traffic directed specifically to the host operating syst
 
 Currently, the default policy for outbound traffic is set to `accept`, meaning the server can freely initiate outbound connections. This section is reserved for future use in case strict egress filtering needs to be implemented.
 
-| Port/Protocol | Service | Allowed Destination | Justification |
-| :--- | :--- | :--- | :--- |
-| *(Reserved)* | *TBD* | *TBD* | *(Placeholder for future explicit outbound rules)* |
+| Port/Protocol | Service | Allowed Destination | Justification                                      |
+| :------------ | :------ | :------------------ | :------------------------------------------------- |
+| *(Reserved)*  | *TBD*   | *TBD*               | *(Placeholder for future explicit outbound rules)* |
 
+---
 
 ## Traffic Forwarding (FORWARD Chain)
 
-This section manages the traffic passing through the host server towards Docker containers (communication between the physical network interface and virtual interfaces).
+This section manages traffic passing between the physical LAN interface and Docker containers.
 
-| Route | Protocol | Destination Port | Action | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **wlp2s0 → br-ed5105...** | TCP | `3001` | `accept` | Allows requests from the physical network to reach the Uptime Kuma container. |
-| **br-ed5105... → wlp2s0** | TCP | Source: `3001` | `accept` | Allows *return* traffic from Uptime Kuma back to the LAN, restricted strictly to already established connections. |
+The `FORWARD` chain uses a default `drop` policy. Docker services therefore require explicit forwarding rules when accessed from the LAN.
+
+| Route                       | Protocol | Destination Port    | Action   | Description                                                                             |
+| :-------------------------- | :------- | :------------------ | :------- | :-------------------------------------------------------------------------------------- |
+| **wlp2s0 → br-ed5105...**   | TCP      | `3001`              | `accept` | Allows requests from the LAN to reach the Uptime Kuma container.                        |
+| **wlp2s0 → br-de17c2...**   | TCP      | `2283`              | `accept` | Allows requests from the LAN to reach the Immich container.                             |
+| **Docker bridges → wlp2s0** | TCP      | Established/related | `accept` | Allows return traffic for established connections from Docker services back to the LAN. |
+
+The general return-traffic rule is:
+
+```nft
+oifname "wlp2s0" ct state established,related accept
+```
+
+This allows responses from Docker services without requiring a separate return rule for each individual service.
+
+### Docker networking
+
+Docker handles the NAT and container-level filtering for published ports. The custom `FORWARD` chain provides an additional filtering layer that explicitly controls which Docker services can be accessed from the LAN.
+
+Currently exposed Docker services include:
+
+* **Uptime Kuma:** `3001/TCP`
+* **Immich:** `2283/TCP`
+
