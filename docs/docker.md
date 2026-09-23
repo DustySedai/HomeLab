@@ -10,6 +10,8 @@ The homelab uses Docker as the main platform for deploying services.
 
 - Uptime Kuma
 
+- Immich
+
 ## Concepts Being Learned
 
 - Docker images

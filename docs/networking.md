@@ -1,245 +1,188 @@
 # Networking
 
-## Network interface
-
-The server uses the wireless interface:
-
-```text
-wlp2s0
-```
-
-Wireless adapter:
-
-```text
-RTL8188CE 802.11b/g/n WiFi Adapter
-```
-
-MAC address:
-
-```text
-9c:b7:0d:3a:dd:fe
-```
+## Network Overview
 
 The server is connected to the local network through Wi-Fi.
 
+| Component     | Configuration     |
+| ------------- | ----------------- |
+| Interface     | `wlp2s0`          |
+| Connection    | Wi-Fi             |
+| LAN           | `<LAN_SUBNET>`    |
+| Server IP     | `<SERVER_LAN_IP>` |
+| Gateway       | `<GATEWAY_IP>`    |
+| Configuration | Static IP         |
+| Remote access | SSH / Tailscale   |
+
+The server uses a static address because DHCP reservation cannot be configured on the current router.
+
+### Current routing
+
+```text
+default via <GATEWAY_IP> dev wlp2s0
+<LAN_SUBNET> dev wlp2s0 src <SERVER_LAN_IP>
+```
+
+Docker networks are also present as local routes.
+
 ---
 
-## Initial DHCP configuration
+## Network Configuration
 
-Initially, `wlp2s0` received its network configuration through DHCP.
+The server uses `ifupdown` for the network configuration.
 
-The server was assigned:
-
-```text
-IP address: 192.168.100.35/24
-Gateway:    192.168.100.1
-```
-
-The DHCP-assigned address was not ideal for a homelab server because services such as Pi-hole and monitoring applications benefit from a predictable address.
-
-Router access was not available, so a DHCP reservation could not be configured.
-
-A static IP was therefore configured directly on the server.
-
----
-
-## Static IP configuration
-
-The selected static address is:
-
-```text
-192.168.100.250/24
-```
-
-The gateway is:
-
-```text
-192.168.100.1
-```
-
-The configuration is stored in:
+Main configuration:
 
 ```text
 /etc/network/interfaces
 ```
 
-Relevant configuration:
+The `wlp2s0` interface is configured with a static IPv4 address.
 
-```text
-allow-hotplug wlp2s0
-iface wlp2s0 inet static
-    address 192.168.100.250
-    netmask 255.255.255.0
-    gateway 192.168.100.1
-    wpa-ssid [configured locally]
-    wpa-psk [configured locally]
-```
+The actual address is intentionally omitted from the public documentation.
 
-The Wi-Fi credentials are intentionally not included in the documentation.
+`systemd-networkd` and NetworkManager are not used for the server network configuration.
 
 ---
 
-## DHCP interference
+## LAN Access
 
-After changing the interface to static configuration, the server continued to receive the previous DHCP address:
+Services exposed to the local network:
 
-```text
-192.168.100.35
-```
+| Service     | Address           |   Port |
+| ----------- | ----------------- | -----: |
+| SSH         | `<SERVER_LAN_IP>` |   `22` |
+| Nginx       | `<SERVER_LAN_IP>` | `8080` |
+| Uptime Kuma | `<SERVER_LAN_IP>` | `3001` |
+| Immich      | `<SERVER_LAN_IP>` | `2283` |
 
-The interface temporarily contained both addresses:
+LAN access is restricted to the local subnet.
 
-```text
-192.168.100.250/24
-192.168.100.35/24
-```
-
-The routing table also continued to use the DHCP configuration:
-
-```text
-default via 192.168.100.1 dev wlp2s0 proto dhcp src 192.168.100.35
-```
-
-### Diagnosis
-
-The system was using `ifupdown` to manage the interface:
-
-```text
-ifup@wlp2s0.service
-        ↓
-/usr/sbin/ifup --allow=hotplug wlp2s0
-```
-
-The journal showed that `ifup` was starting `dhcpcd`:
-
-```text
-dhcpcd-10.1.0 starting
-wlp2s0: soliciting a DHCP lease
-wlp2s0: offered 192.168.100.35 from 192.168.100.1
-wlp2s0: leased 192.168.100.35
-wlp2s0: adding default route via 192.168.100.1
-```
-
-This explained why DHCP remained active despite the static `ifupdown` configuration.
+The exact subnet and server address are intentionally omitted from the public documentation.
 
 ---
 
-## Preventing DHCP on the static interface
+## Tailscale
 
-The DHCP client was instructed not to manage `wlp2s0`.
+Tailscale is used for remote access without exposing Immich directly through the router.
 
-File:
+The server has a Tailscale address assigned by the Tailscale network.
 
-```text
-/etc/dhcpcd.conf
-```
-
-Configuration added near the beginning of the file:
+Immich is accessible remotely through the server's Tailscale address:
 
 ```text
-denyinterfaces wlp2s0
+http://<TAILSCALE_SERVER_IP>:2283
 ```
 
-This prevents `dhcpcd` from managing the wireless interface.
+The firewall allows TCP/2283 from the Tailscale CGNAT range:
+
+```text
+100.64.0.0/10
+```
+
+Individual device addresses are not documented publicly.
+
+Tailscale is used as a private remote-access path; it is not configured as an Exit Node.
 
 ---
 
-## Removing the existing DHCP lease
+## Docker Networking
 
-Because the DHCP client had already configured the interface, changing the configuration alone did not immediately remove the existing address and routes.
+Docker uses several isolated networks.
 
-The active `dhcpcd` instance was stopped with:
+Current relevant networks:
 
-```bash
-sudo dhcpcd -x wlp2s0
+```text
+bridge
+homelab_internal
+immich_default
+uptime-kuma_default
+host
+none
 ```
 
-The DHCP address was then removed:
+### homelab_internal
 
-```bash
-sudo ip addr del 192.168.100.35/24 dev wlp2s0
+A shared Docker bridge network was created for communication between homelab services:
+
+```text
+homelab_internal
 ```
 
-The static network route was restored:
+The bridge's dynamically assigned IP range and container IP addresses are intentionally omitted from the public documentation.
 
-```bash
-sudo ip route add 192.168.100.0/24 dev wlp2s0 src 192.168.100.250
+Services that need internal communication can use Docker's internal DNS instead of the server's LAN address.
+
+For example, Uptime Kuma monitors Immich using:
+
+```text
+http://immich_server:2283
 ```
 
-The default route was restored:
+This keeps service-to-service communication inside Docker.
 
-```bash
-sudo ip route add default via 192.168.100.1 dev wlp2s0
+### Immich network
+
+Immich also maintains its own Docker network:
+
+```text
+immich_default
 ```
+
+### Uptime Kuma network
+
+Uptime Kuma maintains its own Docker network:
+
+```text
+uptime-kuma_default
+```
+
+Uptime Kuma is connected to both its original network and `homelab_internal`.
 
 ---
 
-## Verification
+## Network Access Model
 
-Local gateway connectivity was verified:
+Current intended access paths:
 
-```bash
-ping -c 4 192.168.100.1
+```text
+LAN
+ ├──→ SSH        :22
+ ├──→ Nginx      :8080
+ ├──→ Uptime Kuma:3001
+ └──→ Immich     :2283
+
+Tailscale
+ └──→ Immich     :2283
+
+Docker
+ └── Uptime Kuma → Immich :2283
 ```
 
-Internet connectivity was verified using a public IP:
-
-```bash
-ping -c 4 1.1.1.1
-```
-
-DNS resolution and external connectivity were verified with:
-
-```bash
-ping -c 4 debian.org
-```
-
-All tests succeeded with 0% packet loss.
+Internet access to these services is not allowed by the host firewall.
 
 ---
 
-## Reboot verification
+## Service Access
 
-The server was rebooted to verify that the configuration was persistent.
+| Service     | LAN     | Tailscale | Docker internal      |
+| ----------- | ------- | --------- | -------------------- |
+| SSH         | `:22`   | —         | Kuma → server        |
+| Nginx       | `:8080` | —         | —                    |
+| Uptime Kuma | `:3001` | —         | —                    |
+| Immich      | `:2283` | `:2283`   | `immich_server:2283` |
 
-After reboot:
+Exact IP addresses are intentionally excluded from this public documentation.
 
-```bash
-ip addr show wlp2s0
-```
+---
 
-reported only:
+## Notes
 
-```text
-inet 192.168.100.250/24
-```
-
-The previous DHCP address `192.168.100.35` was no longer present.
-
-The routing table contained:
-
-```text
-default via 192.168.100.1 dev wlp2s0 onlink
-192.168.100.0/24 dev wlp2s0 proto kernel scope link src 192.168.100.250
-```
-
-Connectivity was successfully verified again:
-
-```text
-192.168.100.1  → reachable
-1.1.1.1        → reachable
-debian.org     → reachable
-```
-
-### Final network state
-
-```text
-Interface:    wlp2s0
-IPv4:         192.168.100.250/24
-Gateway:      192.168.100.1
-Configuration: Static
-DHCP:         Disabled for wlp2s0
-```
-
-The static IP configuration survives reboot and is ready to be used by homelab services such as Pi-hole and monitoring applications.
+* The server uses a static LAN address.
+* The router is not configured with a DHCP reservation for the server.
+* Docker service-to-service communication should preferably use Docker DNS/service names rather than fixed container IP addresses.
+* `homelab_internal` is intended for communication between homelab services that require it.
+* Firewall rules should not depend unnecessarily on dynamically assigned Docker bridge IP addresses.
+* LAN access provides network access to the service, while application-level authentication controls access to application data.
+* Private network addresses, Tailscale device addresses and Docker container addresses are intentionally omitted from the public repository.
 

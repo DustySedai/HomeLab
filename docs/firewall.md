@@ -1,81 +1,161 @@
-# Firewall Documentation (nftables)
+# Firewall
 
-This document details the firewall configuration for the homelab server, managed via `nftables`. The configuration is designed with a restrictive default policy but **optimized to coexist with Docker**, avoiding interference with the rules and tables dynamically created by the Docker daemon.
+The server uses **nftables** as its host-based firewall.
 
-## Base Policies (Default)
+The firewall follows a default-deny approach for incoming and forwarded traffic. Outgoing traffic is allowed.
 
-The `inet filter` table is configured with the following default policies:
+## Firewall Policy
 
-*   **INPUT:** `drop` (All unexplicitly authorized incoming traffic is discarded).
-*   **FORWARD:** `drop` (Routing between networks is not allowed unless declared).
-*   **OUTPUT:** `accept` (The server has unrestricted outbound access).
+| Chain     | Default policy |
+| --------- | -------------- |
+| `input`   | DROP           |
+| `forward` | DROP           |
+| `output`  | ACCEPT         |
 
-*Note on Docker:* Instead of using `flush ruleset` when reloading the firewall, we use `destroy table inet filter`. This exclusively clears our custom rules without breaking Docker's internal routing.
+Established and related connections are allowed so that return traffic for permitted connections can flow normally.
 
----
-
-## Known Interfaces and Subnets
-
-* **`wlp2s0`**: Main network interface (Wi-Fi / LAN). Connected to the `192.168.100.0/24` subnet.
-* **`br-ed510586f505`**: Docker bridge network interface. Hosts services like Uptime Kuma (`172.18.0.2`).
-* **`br-de17c2644fb0`**: Docker bridge network interface used by Immich (`172.19.0.5`).
-* **`lo`**: Local loopback interface (internal system traffic).
+Invalid connection states are dropped.
 
 ---
 
-## Inbound Rules (INPUT Chain)
+## Input Rules
 
-These rules control traffic directed specifically to the host operating system.
+The `input` chain controls traffic destined directly for the server.
 
-| Port/Protocol   | Service     | Allowed Source             | Justification                                                                                   |
-| :-------------- | :---------- | :------------------------- | :---------------------------------------------------------------------------------------------- |
-| **22 (TCP)**    | SSH         | LAN (`192.168.100.0/24`)   | Administrative access from any device on the local network.                                     |
-| **22 (TCP)**    | SSH         | Uptime Kuma (`172.18.0.2`) | Allows Uptime Kuma to authenticate via SSH on the host to monitor resources or execute scripts. |
-| **8080 (TCP)**  | Nginx       | LAN (`192.168.100.0/24`)   | Local access to the web server or reverse proxy exposed on this port.                           |
-| **3001 (TCP)**  | Uptime Kuma | LAN (`192.168.100.0/24`)   | Access to the monitoring dashboard web interface from the local network.                        |
-| **2283 (TCP)**  | Immich      | LAN (`192.168.100.0/24`)   | Access to the Immich web interface from the local network.                                      |
-| **ICMP (Echo)** | Ping        | LAN (`192.168.100.0/24`)   | Network diagnostics to verify if the server is online from other local devices.                 |
+### Allowed traffic
 
-*Additional protections:* Packets with an invalid state are explicitly dropped (`ct state invalid drop`), and established/related connections are permitted.
+| Source                  | Protocol | Port / Type  | Purpose                    |
+| ----------------------- | -------- | ------------ | -------------------------- |
+| Local LAN               | TCP      | `22`         | SSH                        |
+| Local LAN               | ICMP     | Echo request | Network diagnostics        |
+| Local LAN               | TCP      | `8080`       | Nginx                      |
+| Local LAN               | TCP      | `3001`       | Uptime Kuma                |
+| Local LAN               | TCP      | `2283`       | Immich                     |
+| Docker service networks | TCP      | `22`         | Uptime Kuma → server SSH   |
+| Established/related     | —        | —            | Return traffic             |
+| Loopback                | —        | —            | Local system communication |
 
----
-
-## Outbound Rules (OUTPUT Chain)
-
-Currently, the default policy for outbound traffic is set to `accept`, meaning the server can freely initiate outbound connections. This section is reserved for future use in case strict egress filtering needs to be implemented.
-
-| Port/Protocol | Service | Allowed Destination | Justification                                      |
-| :------------ | :------ | :------------------ | :------------------------------------------------- |
-| *(Reserved)*  | *TBD*   | *TBD*               | *(Placeholder for future explicit outbound rules)* |
+The exact LAN addresses and Docker container addresses are intentionally omitted from the public documentation.
 
 ---
 
-## Traffic Forwarding (FORWARD Chain)
+## Forwarding Rules
 
-This section manages traffic passing between the physical LAN interface and Docker containers.
+The `forward` chain controls traffic passing through the server, including traffic forwarded to Docker containers.
 
-The `FORWARD` chain uses a default `drop` policy. Docker services therefore require explicit forwarding rules when accessed from the LAN.
+### LAN → Services
 
-| Route                       | Protocol | Destination Port    | Action   | Description                                                                             |
-| :-------------------------- | :------- | :------------------ | :------- | :-------------------------------------------------------------------------------------- |
-| **wlp2s0 → br-ed5105...**   | TCP      | `3001`              | `accept` | Allows requests from the LAN to reach the Uptime Kuma container.                        |
-| **wlp2s0 → br-de17c2...**   | TCP      | `2283`              | `accept` | Allows requests from the LAN to reach the Immich container.                             |
-| **Docker bridges → wlp2s0** | TCP      | Established/related | `accept` | Allows return traffic for established connections from Docker services back to the LAN. |
+The local network is allowed to reach:
 
-The general return-traffic rule is:
+| Destination     |   Port | Service     |
+| --------------- | -----: | ----------- |
+| Server / Docker | `3001` | Uptime Kuma |
+| Server / Docker | `2283` | Immich      |
 
-```nft
-oifname "wlp2s0" ct state established,related accept
+The source is restricted to the local LAN subnet.
+
+### Tailscale → Immich
+
+Tailscale clients are allowed to reach Immich:
+
+```text
+Tailscale (100.64.0.0/10)
+        │
+        └──→ TCP 2283
+              Immich
 ```
 
-This allows responses from Docker services without requiring a separate return rule for each individual service.
+No equivalent forwarding rule exists for Uptime Kuma or the other LAN services through Tailscale.
 
-### Docker networking
+### Return traffic
 
-Docker handles the NAT and container-level filtering for published ports. The custom `FORWARD` chain provides an additional filtering layer that explicitly controls which Docker services can be accessed from the LAN.
+Established and related traffic is allowed back through the appropriate interface.
 
-Currently exposed Docker services include:
+This allows responses to permitted LAN and Tailscale connections without creating broad inbound rules.
 
-* **Uptime Kuma:** `3001/TCP`
-* **Immich:** `2283/TCP`
+---
+
+## Current Access Matrix
+
+| Source          | SSH `22` | Nginx `8080` | Kuma `3001` | Immich `2283` |
+| --------------- | -------: | -----------: | ----------: | ------------: |
+| Local LAN       |        ✅ |            ✅ |           ✅ |             ✅ |
+| Tailscale       |        ❌ |            ❌ |           ❌ |             ✅ |
+| Internet        |        ❌ |            ❌ |           ❌ |             ❌ |
+| Docker internal |  Limited |            ❌ |    Internal |      Internal |
+
+`Docker internal` access is controlled primarily by Docker networking and container configuration.
+
+---
+
+## Docker Integration
+
+Docker manages its own nftables rules for container networking and published ports.
+
+The custom firewall therefore does **not** replace Docker's networking rules.
+
+The custom `inet filter` table provides the host-level policy that controls which LAN and Tailscale traffic is allowed to reach the published services.
+
+The Docker-managed tables should not be manually modified unless there is a specific reason to do so.
+
+### Shared Docker network
+
+Services that require internal communication can use:
+
+```text
+homelab_internal
+```
+
+For example:
+
+```text
+Uptime Kuma → http://immich_server:2283
+```
+
+This communication remains inside Docker and does not require exposing Immich through the LAN interface.
+
+---
+
+## Security Model
+
+The current firewall follows these principles:
+
+* Default deny for inbound traffic.
+* Default deny for forwarded traffic.
+* Only required service ports are exposed to the LAN.
+* Remote access is limited to Immich through Tailscale.
+* Tailscale access is restricted to the Tailscale CGNAT range `100.64.0.0/10`.
+* Return traffic is allowed through connection tracking.
+* Docker networking remains managed by Docker.
+* Firewall rules avoid depending on dynamically assigned Docker container IPs whenever possible.
+* Application authentication remains responsible for controlling access to application data.
+
+---
+
+## Exposed Ports
+
+The currently relevant TCP ports are:
+
+|   Port | Service     | Exposure                  |
+| -----: | ----------- | ------------------------- |
+|   `22` | SSH         | LAN / internal monitoring |
+| `8080` | Nginx       | LAN                       |
+| `3001` | Uptime Kuma | LAN                       |
+| `2283` | Immich      | LAN / Tailscale           |
+
+No Internet-facing inbound rule is intentionally configured for these services.
+
+---
+
+## Configuration
+
+Main firewall configuration:
+
+```text
+/etc/nftables.conf
+```
+
+The nftables service is enabled so the firewall configuration is loaded automatically during system startup.
+
+Private LAN addresses, Docker bridge addresses and individual Tailscale device addresses are intentionally excluded from this public documentation.
 
