@@ -25,7 +25,3 @@ The HDD was checked using SMART diagnostics.
 ## Upgrade Possibilities
 
 * RAM: Potential upgrade to 12 GB.
-
-## Notes
-
-This notebook was selected as the initial homelab server to learn Linux system administration, networking, Docker, and self-hosted services.

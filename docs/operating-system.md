@@ -4,7 +4,7 @@
 
 - Operating system: Debian 13 (Trixie)
 - Architecture: amd64
-- Hostname: sedai-server
+- Hostname: X
 - Installation type: Minimal installation
 - Kernel: Linux 6.12.107+deb13-amd64
 
@@ -25,7 +25,7 @@ The server is administered remotely through SSH.
 
 The main user is:
 
-- `sedaiserver`
+- `X`
 
 ## Goals
 
