@@ -22,6 +22,9 @@ Personal homelab project focused on learning and practicing:
 ## Services
 
 - Uptime Kuma
+- Immich
+- Jellyfin (Work-In-Progress)
+
 
 ## Project Status
 
